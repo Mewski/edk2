@@ -1124,6 +1124,11 @@
    }
 
   #
+  # HelloSmmPkg module (OVMF/QEMU only)
+  #
+  HelloSmmPkg/HelloSmm/HelloSmm.inf
+
+  #
   # Variable driver stack (SMM)
   #
   OvmfPkg/QemuFlashFvbServicesRuntimeDxe/FvbServicesSmm.inf {

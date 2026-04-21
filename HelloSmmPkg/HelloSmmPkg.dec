@@ -1,0 +1,12 @@
+## @file
+#  HelloSmmPkg - minimal SMM sample package for OVMF/QEMU.
+#
+#  Copyright (c) 2026, HelloSmmPkg contributors.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  DEC_SPECIFICATION = 0x00010005
+  PACKAGE_NAME      = HelloSmmPkg
+  PACKAGE_GUID      = a7f4c92e-3b11-4e5d-9c8a-2f07d14b6e83
+  PACKAGE_VERSION   = 0.1
