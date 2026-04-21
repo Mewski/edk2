@@ -1,0 +1,40 @@
+## @file
+#  DXE_SMM_DRIVER that registers a software SMI handler for reading
+#  arbitrary physical memory from SMM context.
+#
+#  Copyright (c) 2026, SmmProbePkg contributors.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION              = 0x00010005
+  BASE_NAME                = SmmProbe
+  FILE_GUID                = 8c3f1a2b-d5e7-49f0-b612-7a4e9c0d3f58
+  MODULE_TYPE              = DXE_SMM_DRIVER
+  VERSION_STRING           = 1.0
+  PI_SPECIFICATION_VERSION = 0x0001000A
+  ENTRY_POINT              = SmmProbeEntry
+
+[Sources]
+  SmmProbe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  SmmProbePkg/SmmProbePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  SmmServicesTableLib
+  SerialPortLib
+  DebugLib
+  BaseMemoryLib
+  BaseLib
+  IoLib
+  PrintLib
+
+[Guids]
+  gSmmProbeHandlerGuid
+
+[Depex]
+  TRUE

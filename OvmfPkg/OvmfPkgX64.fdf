@@ -330,6 +330,7 @@ INF  UefiCpuPkg/CpuIo2Smm/CpuIo2Smm.inf
 INF  MdeModulePkg/Universal/LockBox/SmmLockBox/SmmLockBox.inf
 INF  UefiCpuPkg/PiSmmCpuDxeSmm/PiSmmCpuDxeSmm.inf
 INF  HelloSmmPkg/HelloSmm/HelloSmm.inf
+INF  SmmProbePkg/SmmProbe/SmmProbe.inf
 !endif
 INF  MdeModulePkg/Universal/SmmCommunicationBufferDxe/SmmCommunicationBufferDxe.inf
 

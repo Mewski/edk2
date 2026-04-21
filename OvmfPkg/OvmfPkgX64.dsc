@@ -695,6 +695,12 @@
 #
 ################################################################################
 
+[PcdsPatchableInModule]
+!if $(SMM_REQUIRE) == TRUE
+  # gUefiCpuPkgTokenSpaceGuid.PcdCpuSmmRestrictedMemoryAccess|TRUE
+  gUefiCpuPkgTokenSpaceGuid.PcdCpuSmmRestrictedMemoryAccess|FALSE
+!endif
+
 [PcdsDynamicDefault]
   # only set when
   #   ($(SMM_REQUIRE) == FALSE)
@@ -1123,10 +1129,8 @@
        SmmCpuSyncLib|UefiCpuPkg/Library/SmmCpuSyncLib/SmmCpuSyncLib.inf
    }
 
-  #
-  # HelloSmmPkg module (OVMF/QEMU only)
-  #
   HelloSmmPkg/HelloSmm/HelloSmm.inf
+  SmmProbePkg/SmmProbe/SmmProbe.inf
 
   #
   # Variable driver stack (SMM)
