@@ -3,6 +3,8 @@
 
   Registers a root SMI handler that reads commands from a fixed
   physical memory mailbox and writes results to a dedicated UART.
+  Supports continuous monitoring via the ICH9 SWSMI timer at 60Hz
+  with results written to a physical memory ring buffer.
 
   Copyright (c) 2026, SmmProbePkg contributors.
   SPDX-License-Identifier: BSD-2-Clause-Patent
@@ -16,10 +18,18 @@
 #include <Library/BaseLib.h>
 #include <Library/IoLib.h>
 #include <Library/PrintLib.h>
+#include <Library/PciLib.h>
 
 #include "SmmProbe.h"
 
-STATIC EFI_HANDLE  mSmiHandle = NULL;
+STATIC EFI_HANDLE  mSmiHandle     = NULL;
+STATIC BOOLEAN     mWatchActive   = FALSE;
+STATIC UINT64      mWatchAddress  = 0;
+STATIC UINT32      mWatchLength   = 0;
+
+//
+// UART helpers (output only, for mailbox command responses).
+//
 
 STATIC
 VOID
@@ -120,6 +130,118 @@ HexDump (
   }
 }
 
+//
+// Ring buffer helpers (for high-speed continuous capture).
+//
+
+STATIC
+VOID
+RingInit (
+  VOID
+  )
+{
+  volatile RING_HEADER  *Hdr;
+
+  Hdr = (volatile RING_HEADER *)(UINTN)RING_PHYS_ADDR;
+  Hdr->WriteOffset = sizeof (RING_HEADER);
+  Hdr->ReadOffset  = sizeof (RING_HEADER);
+  Hdr->EntryCount  = 0;
+  Hdr->Overflow    = 0;
+}
+
+STATIC
+VOID
+RingWrite (
+  IN UINT64  Address,
+  IN UINT32  Length
+  )
+{
+  volatile RING_HEADER  *Hdr;
+  RING_ENTRY            Entry;
+  UINT32                TotalSize;
+  UINT32                WriteOfs;
+  UINT32                Available;
+  UINT8                 *RingBase;
+  UINT8                 *Src;
+
+  if (Length > MAX_PROBE_SIZE) {
+    Length = MAX_PROBE_SIZE;
+  }
+
+  Hdr       = (volatile RING_HEADER *)(UINTN)RING_PHYS_ADDR;
+  RingBase  = (UINT8 *)(UINTN)RING_PHYS_ADDR;
+  TotalSize = sizeof (RING_ENTRY) + Length;
+  WriteOfs  = Hdr->WriteOffset;
+
+  Available = RING_SIZE - WriteOfs;
+  if (Available < TotalSize) {
+    //
+    // Wrap around. Reset to start of data area.
+    //
+    WriteOfs = sizeof (RING_HEADER);
+    Hdr->Overflow++;
+  }
+
+  Entry.Timestamp = AsmReadTsc ();
+  Entry.Length     = Length;
+  Entry.Reserved   = 0;
+
+  CopyMem (RingBase + WriteOfs, &Entry, sizeof (RING_ENTRY));
+  WriteOfs += sizeof (RING_ENTRY);
+
+  Src = (UINT8 *)(UINTN)Address;
+  CopyMem (RingBase + WriteOfs, Src, Length);
+  WriteOfs += Length;
+
+  Hdr->WriteOffset = WriteOfs;
+  Hdr->EntryCount++;
+}
+
+//
+// SWSMI timer control.
+//
+
+STATIC
+VOID
+SwSmiTimerEnable (
+  IN UINT8  Rate
+  )
+{
+  UINT8   GenPmCon1;
+  UINT32  SmiEn;
+
+  //
+  // Set SWSMI rate in GEN_PMCON_1 (PCI 0:1F.0 register 0xA0).
+  //
+  GenPmCon1 = PciRead8 (ICH9_LPC_PCI_ADDR (ICH9_GEN_PMCON_1));
+  GenPmCon1 = (GenPmCon1 & ~SWSMI_RATE_MASK) | (Rate & SWSMI_RATE_MASK);
+  PciWrite8 (ICH9_LPC_PCI_ADDR (ICH9_GEN_PMCON_1), GenPmCon1);
+
+  //
+  // Enable SWSMI timer in SMI_EN.
+  //
+  SmiEn = IoRead32 (ICH9_PMBASE_VALUE + ICH9_SMI_EN_OFS);
+  SmiEn |= ICH9_SMI_EN_SWSMI_TMR | ICH9_SMI_EN_GBL_SMI;
+  IoWrite32 (ICH9_PMBASE_VALUE + ICH9_SMI_EN_OFS, SmiEn);
+}
+
+STATIC
+VOID
+SwSmiTimerDisable (
+  VOID
+  )
+{
+  UINT32  SmiEn;
+
+  SmiEn = IoRead32 (ICH9_PMBASE_VALUE + ICH9_SMI_EN_OFS);
+  SmiEn &= ~ICH9_SMI_EN_SWSMI_TMR;
+  IoWrite32 (ICH9_PMBASE_VALUE + ICH9_SMI_EN_OFS, SmiEn);
+}
+
+//
+// Root SMI handler.
+//
+
 STATIC
 EFI_STATUS
 EFIAPI
@@ -131,7 +253,30 @@ SmmProbeHandler (
   )
 {
   volatile PROBE_MAILBOX  *Mailbox;
+  UINT32                  SmiSts;
 
+  //
+  // Clear SWSMI timer status so it re-arms.
+  //
+  SmiSts = IoRead32 (ICH9_PMBASE_VALUE + ICH9_SMI_STS_OFS);
+  if ((SmiSts & ICH9_SMI_STS_SWSMI_TMR) != 0) {
+    IoWrite32 (ICH9_PMBASE_VALUE + ICH9_SMI_STS_OFS, ICH9_SMI_STS_SWSMI_TMR);
+  }
+
+  if ((SmiSts & ICH9_SMI_STS_PERIODIC) != 0) {
+    IoWrite32 (ICH9_PMBASE_VALUE + ICH9_SMI_STS_OFS, ICH9_SMI_STS_PERIODIC);
+  }
+
+  //
+  // Continuous watch: copy target memory into ring buffer.
+  //
+  if (mWatchActive) {
+    RingWrite (mWatchAddress, mWatchLength);
+  }
+
+  //
+  // Check mailbox for commands.
+  //
   Mailbox = (volatile PROBE_MAILBOX *)(UINTN)MAILBOX_PHYS_ADDR;
 
   if (Mailbox->Signature != MAILBOX_SIG) {
@@ -149,8 +294,28 @@ SmmProbeHandler (
       Mailbox->Status = 0;
       break;
 
+    case MAILBOX_CMD_WATCH:
+      if (Mailbox->Length == 0) {
+        mWatchActive = FALSE;
+        SwSmiTimerDisable ();
+        ProbeUartPrint ("WATCH: stopped\r\n");
+      } else {
+        mWatchAddress = Mailbox->PhysicalAddress;
+        mWatchLength  = Mailbox->Length;
+        if (mWatchLength > MAX_PROBE_SIZE) {
+          mWatchLength = MAX_PROBE_SIZE;
+        }
+
+        RingInit ();
+        mWatchActive = TRUE;
+        SwSmiTimerEnable (SWSMI_RATE_16MS);
+        ProbeUartPrint ("WATCH: started at 60Hz\r\n");
+      }
+
+      Mailbox->Status = 0;
+      break;
+
     default:
-      ProbeUartPrint ("ERR: unknown command\r\n");
       Mailbox->Status = 1;
       break;
   }
@@ -186,8 +351,20 @@ SmmProbeEntry (
 
   DEBUG ((DEBUG_INFO, "SmmProbe: root SMI handler registered\n"));
 
-  ProbeUartPrint ("SmmProbe: self-test, 64 bytes at 0x1000:\r\n");
-  HexDump (0x1000, 64);
+  RingInit ();
+
+  //
+  // Enable periodic SMI as fallback for mailbox polling.
+  //
+  {
+    UINT32  SmiEn;
+
+    SmiEn = IoRead32 (ICH9_PMBASE_VALUE + ICH9_SMI_EN_OFS);
+    SmiEn |= ICH9_SMI_EN_PERIODIC | ICH9_SMI_EN_GBL_SMI;
+    IoWrite32 (ICH9_PMBASE_VALUE + ICH9_SMI_EN_OFS, SmiEn);
+  }
+
+  ProbeUartPrint ("SmmProbe: ready\r\n");
 
   return EFI_SUCCESS;
 }
